@@ -22,6 +22,9 @@ const PRICE_LIST_CACHE_TTL = (parseInt(process.env.PRICE_LIST_CACHE_TTL, 10) || 
 
 let pool;
 let priceListCache = { data: null, fetchedAt: 0 };
+let pascaPriceListCache = { data: null, fetchedAt: 0 };
+
+const EWALLET_KEYWORDS = ['dana', 'ovo', 'gopay', 'go pay', 'shopeepay', 'shopee pay', 'linkaja', 'grabpay', 'grab pay', 'maxim'];
 
 app.use(cors());
 app.use(express.json());
@@ -153,10 +156,99 @@ const getDigiflazzPriceList = async (forceRefresh = false) => {
   }
 };
 
-const SERVICE_IDS = ['pulsa', 'data', 'voucher', 'game', 'pln'];
+const fetchDigiflazzPascaPriceListFromApi = async () => {
+  const result = await callDigiflazz('/price-list', {
+    cmd: 'pasca',
+    username: DIGIFLAZZ_USERNAME,
+    sign: digiflazzSign('pricelist'),
+  });
 
-const matchProductService = (product, service) => {
-  if (!service || !SERVICE_IDS.includes(service)) return true;
+  if (Array.isArray(result?.data)) {
+    return result.data;
+  }
+
+  const errorMessage =
+    result?.data?.message ||
+    result?.message ||
+    (typeof result?.data === 'string' ? result.data : null) ||
+    'Gagal mengambil daftar harga pascabayar dari Digiflazz.';
+
+  const error = new Error(errorMessage);
+  error.digiflazzResponse = result;
+  error.rc = result?.data?.rc;
+  throw error;
+};
+
+const getDigiflazzPascaPriceList = async (forceRefresh = false) => {
+  const now = Date.now();
+  const cacheValid =
+    pascaPriceListCache.data && now - pascaPriceListCache.fetchedAt < PRICE_LIST_CACHE_TTL;
+
+  if (cacheValid && !forceRefresh) {
+    return pascaPriceListCache.data;
+  }
+
+  try {
+    const data = await fetchDigiflazzPascaPriceListFromApi();
+    pascaPriceListCache = { data, fetchedAt: now };
+    return data;
+  } catch (err) {
+    if (pascaPriceListCache.data) {
+      console.warn(`Menggunakan cache pricelist pasca lama: ${err.message}`);
+      return pascaPriceListCache.data;
+    }
+    throw err;
+  }
+};
+
+const PREPAID_SERVICE_IDS = ['pulsa', 'data', 'voucher', 'game', 'pln', 'ewallet'];
+const PASCA_SERVICE_IDS = ['pln-pasca', 'pdam-pasca', 'bpjs-pasca'];
+const SERVICE_IDS = [...PREPAID_SERVICE_IDS, ...PASCA_SERVICE_IDS];
+
+const isEwalletProduct = (product) => {
+  const category = (product.category || '').toLowerCase();
+  const brand = (product.brand || '').toLowerCase();
+  const name = (product.product_name || '').toLowerCase();
+
+  if (
+    category.includes('e-money') ||
+    category.includes('emoney') ||
+    category.includes('e-wallet') ||
+    category.includes('ewallet')
+  ) {
+    return true;
+  }
+
+  return EWALLET_KEYWORDS.some((keyword) => brand.includes(keyword) || name.includes(keyword));
+};
+
+const isPlnPrepaidProduct = (product) => {
+  const category = (product.category || '').toLowerCase();
+  const brand = (product.brand || '').toLowerCase();
+  const name = (product.product_name || '').toLowerCase();
+
+  if (
+    category.includes('pasca') ||
+    name.includes('pascabayar') ||
+    name.includes('tagihan') ||
+    isEwalletProduct(product)
+  ) {
+    return false;
+  }
+
+  return (
+    category.includes('pln') ||
+    brand.includes('pln') ||
+    category.includes('listrik') ||
+    name.includes('pln') ||
+    name.includes('token listrik') ||
+    name.includes('token pln') ||
+    (name.includes('token') && (name.includes('listrik') || brand.includes('pln')))
+  );
+};
+
+const matchPrepaidService = (product, service) => {
+  if (!service || !PREPAID_SERVICE_IDS.includes(service)) return true;
 
   const category = (product.category || '').toLowerCase();
   const brand = (product.brand || '').toLowerCase();
@@ -173,12 +265,44 @@ const matchProductService = (product, service) => {
     case 'game':
       return category.includes('game') || brand.includes('game') || name.includes('diamond') || name.includes('uc ');
     case 'pln':
+      return isPlnPrepaidProduct(product);
+    case 'ewallet':
+      return isEwalletProduct(product);
+    default:
+      return true;
+  }
+};
+
+const matchPascaService = (product, service) => {
+  if (!service || !PASCA_SERVICE_IDS.includes(service)) return true;
+
+  const category = (product.category || '').toLowerCase();
+  const brand = (product.brand || '').toLowerCase();
+  const name = (product.product_name || '').toLowerCase();
+
+  switch (service) {
+    case 'pln-pasca':
       return (
-        category.includes('pln') ||
-        brand.includes('pln') ||
-        category.includes('listrik') ||
-        name.includes('pln') ||
-        name.includes('token listrik')
+        (brand.includes('pln') || category.includes('pln') || name.includes('pln') || name.includes('listrik')) &&
+        !brand.includes('pdam') &&
+        !name.includes('pdam') &&
+        !brand.includes('bpjs') &&
+        !name.includes('bpjs')
+      );
+    case 'pdam-pasca':
+      return (
+        brand.includes('pdam') ||
+        category.includes('pdam') ||
+        name.includes('pdam') ||
+        name.includes('air minum') ||
+        name.includes('rekening air')
+      );
+    case 'bpjs-pasca':
+      return (
+        brand.includes('bpjs') ||
+        category.includes('bpjs') ||
+        name.includes('bpjs') ||
+        name.includes('kesehatan')
       );
     default:
       return true;
@@ -197,6 +321,21 @@ const mapPrepaidProducts = (products) =>
       price: parseFloat(p.price),
       selling_price: calcSellingPrice(p.price),
       desc: p.desc,
+      is_pasca: false,
+    }));
+
+const mapPascaProducts = (products) =>
+  products
+    .filter((p) => p.buyer_product_status && p.seller_product_status)
+    .map((p) => ({
+      buyer_sku_code: p.buyer_sku_code,
+      product_name: p.product_name,
+      category: p.category,
+      brand: p.brand,
+      admin: parseFloat(p.admin) || 0,
+      commission: parseFloat(p.commission) || 0,
+      desc: p.desc,
+      is_pasca: true,
     }));
 
 const processDigiflazzTopup = async (refId, buyerSkuCode, customerNo) => {
@@ -210,6 +349,21 @@ const processDigiflazzTopup = async (refId, buyerSkuCode, customerNo) => {
   if (DIGIFLAZZ_TESTING) body.testing = true;
   return callDigiflazz('/transaction', body);
 };
+
+const processDigiflazzPasca = async (command, refId, buyerSkuCode, customerNo) => {
+  const body = {
+    commands: command,
+    username: DIGIFLAZZ_USERNAME,
+    buyer_sku_code: buyerSkuCode,
+    customer_no: customerNo,
+    ref_id: refId,
+    sign: digiflazzSign(refId),
+  };
+  if (DIGIFLAZZ_TESTING) body.testing = true;
+  return callDigiflazz('/transaction', body);
+};
+
+const calcPascaSellingPrice = (digiflazzSellingPrice) => calcSellingPrice(digiflazzSellingPrice);
 
 const mapDigiflazzStatus = (status) => {
   const s = (status || '').toLowerCase();
@@ -436,6 +590,37 @@ const initDatabase = async () => {
         INDEX idx_topup_status (status)
       )
     `);
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS pasca_inquiries (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        user_id INT NOT NULL,
+        ref_id VARCHAR(100) NOT NULL UNIQUE,
+        buyer_sku_code VARCHAR(50) NOT NULL,
+        customer_no VARCHAR(30) NOT NULL,
+        product_name VARCHAR(200) NOT NULL,
+        category VARCHAR(100),
+        brand VARCHAR(100),
+        base_price DECIMAL(15, 2) NOT NULL,
+        selling_price DECIMAL(15, 2) NOT NULL,
+        customer_name VARCHAR(200),
+        inquiry_response JSON,
+        paid_at TIMESTAMP NULL,
+        expires_at TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        INDEX idx_pasca_inquiry_user (user_id),
+        INDEX idx_pasca_inquiry_expires (expires_at)
+      )
+    `);
+
+    try {
+      await connection.query(
+        `ALTER TABLE transactions ADD COLUMN transaction_type ENUM('prepaid', 'pasca') NOT NULL DEFAULT 'prepaid' AFTER brand`
+      );
+    } catch (err) {
+      if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
 
     const [owners] = await connection.query("SELECT id FROM users WHERE role = 'owner' LIMIT 1");
     if (!owners.length) {
@@ -799,12 +984,12 @@ app.get('/api/products/prepaid', authenticate, async (req, res) => {
     const type = req.query.type?.trim() || '';
     const service = req.query.service?.trim().toLowerCase() || '';
 
-    if (service && !SERVICE_IDS.includes(service)) {
+    if (service && !PREPAID_SERVICE_IDS.includes(service)) {
       return res.status(400).json({ success: false, message: 'Jenis layanan tidak valid' });
     }
 
     let raw = products;
-    if (service) raw = raw.filter((p) => matchProductService(p, service));
+    if (service) raw = raw.filter((p) => matchPrepaidService(p, service));
     if (brand) raw = raw.filter((p) => p.brand === brand);
     if (category) raw = raw.filter((p) => p.category === category);
     if (type) raw = raw.filter((p) => p.type === type);
@@ -836,15 +1021,77 @@ app.get('/api/products/prepaid', authenticate, async (req, res) => {
   }
 });
 
+app.get('/api/products/pasca', authenticate, async (req, res) => {
+  try {
+    if (!DIGIFLAZZ_USERNAME || !DIGIFLAZZ_API_KEY) {
+      return res.status(503).json({
+        success: false,
+        message: 'Digiflazz API belum dikonfigurasi. Atur DIGIFLAZZ_USERNAME dan DIGIFLAZZ_API_KEY di .env',
+      });
+    }
+
+    const products = await getDigiflazzPascaPriceList();
+    const search = req.query.search?.trim().toLowerCase() || '';
+    const brand = req.query.brand?.trim() || '';
+    const service = req.query.service?.trim().toLowerCase() || '';
+
+    if (service && !PASCA_SERVICE_IDS.includes(service)) {
+      return res.status(400).json({ success: false, message: 'Jenis layanan pascabayar tidak valid' });
+    }
+
+    let raw = products;
+    if (service) raw = raw.filter((p) => matchPascaService(p, service));
+    if (brand) raw = raw.filter((p) => p.brand === brand);
+
+    let data = mapPascaProducts(raw);
+
+    if (search) {
+      data = data.filter(
+        (p) =>
+          p.product_name.toLowerCase().includes(search) ||
+          p.brand.toLowerCase().includes(search) ||
+          p.buyer_sku_code.toLowerCase().includes(search)
+      );
+    }
+
+    const { page, limit, offset } = getPagination(req.query);
+    const total = data.length;
+    const paginated = data.slice(offset, offset + limit);
+
+    res.json({
+      success: true,
+      data: paginated,
+      pagination: paginationMeta(page, limit, total),
+      margin_percent: marginPercent,
+    });
+  } catch (err) {
+    console.error('Digiflazz pasca price-list error:', err.message, err.digiflazzResponse || '');
+    res.status(502).json({ success: false, message: err.message || 'Gagal mengambil daftar produk pascabayar' });
+  }
+});
+
 app.get('/api/products/services', authenticate, async (req, res) => {
   try {
-    const products = mapPrepaidProducts(await getDigiflazzPriceList());
-    const allRaw = await getDigiflazzPriceList();
-    const data = SERVICE_IDS.map((id) => ({
-      id,
-      total: allRaw.filter((p) => p.buyer_product_status && p.seller_product_status && matchProductService(p, id)).length,
-    }));
-    res.json({ success: true, data, total_products: products.length });
+    const [allPrepaidRaw, allPascaRaw] = await Promise.all([
+      getDigiflazzPriceList(),
+      getDigiflazzPascaPriceList().catch(() => []),
+    ]);
+
+    const data = SERVICE_IDS.map((id) => {
+      const isPasca = PASCA_SERVICE_IDS.includes(id);
+      const source = isPasca ? allPascaRaw : allPrepaidRaw;
+      const matcher = isPasca ? matchPascaService : matchPrepaidService;
+      return {
+        id,
+        total: source.filter((p) => p.buyer_product_status && p.seller_product_status && matcher(p, id)).length,
+      };
+    });
+
+    res.json({
+      success: true,
+      data,
+      total_products: mapPrepaidProducts(allPrepaidRaw).length + mapPascaProducts(allPascaRaw).length,
+    });
   } catch (err) {
     res.status(502).json({ success: false, message: err.message || 'Gagal mengambil daftar layanan' });
   }
@@ -853,9 +1100,17 @@ app.get('/api/products/services', authenticate, async (req, res) => {
 app.get('/api/products/brands', authenticate, async (req, res) => {
   try {
     const service = req.query.service?.trim().toLowerCase() || '';
-    let products = await getDigiflazzPriceList();
-    if (service) products = products.filter((p) => matchProductService(p, service));
-    const brands = [...new Set(mapPrepaidProducts(products).map((p) => p.brand).filter(Boolean))].sort();
+    const isPasca = PASCA_SERVICE_IDS.includes(service);
+
+    let products = isPasca ? await getDigiflazzPascaPriceList() : await getDigiflazzPriceList();
+    if (service) {
+      products = products.filter((p) =>
+        isPasca ? matchPascaService(p, service) : matchPrepaidService(p, service)
+      );
+    }
+
+    const mapper = isPasca ? mapPascaProducts : mapPrepaidProducts;
+    const brands = [...new Set(mapper(products).map((p) => p.brand).filter(Boolean))].sort();
     res.json({ success: true, data: brands });
   } catch (err) {
     console.error('Digiflazz brands error:', err.message);
@@ -879,9 +1134,22 @@ app.post('/api/products/refresh-cache', authenticate, authorize('owner', 'admin'
     if (!DIGIFLAZZ_USERNAME || !DIGIFLAZZ_API_KEY) {
       return res.status(503).json({ success: false, message: 'Digiflazz API belum dikonfigurasi' });
     }
-    const data = await getDigiflazzPriceList(true);
-    await logActivity(req.user.id, 'refresh_pricelist', `Refresh cache pricelist (${data.length} produk)`, null, req.ip);
-    res.json({ success: true, message: 'Cache pricelist berhasil diperbarui', data: { total: data.length } });
+    const [prepaidData, pascaData] = await Promise.all([
+      getDigiflazzPriceList(true),
+      getDigiflazzPascaPriceList(true).catch(() => []),
+    ]);
+    await logActivity(
+      req.user.id,
+      'refresh_pricelist',
+      `Refresh cache pricelist (prepaid: ${prepaidData.length}, pasca: ${pascaData.length})`,
+      null,
+      req.ip
+    );
+    res.json({
+      success: true,
+      message: 'Cache pricelist berhasil diperbarui',
+      data: { prepaid: prepaidData.length, pasca: pascaData.length },
+    });
   } catch (err) {
     res.status(502).json({ success: false, message: err.message || 'Gagal refresh cache' });
   }
@@ -935,8 +1203,8 @@ app.post('/api/transactions/topup', authenticate, async (req, res) => {
 
     if (status === 'failed') {
       await connection.execute(
-        `INSERT INTO transactions (user_id, ref_id, customer_no, buyer_sku_code, product_name, category, brand, price, selling_price, status, sn, message, digiflazz_response)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO transactions (user_id, ref_id, customer_no, buyer_sku_code, product_name, category, brand, transaction_type, price, selling_price, status, sn, message, digiflazz_response)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'prepaid', ?, ?, ?, ?, ?, ?)`,
         [req.user.id, refId, customer_no, buyer_sku_code, product_name || buyer_sku_code, category, brand, basePrice, sellPrice, status, sn, message, JSON.stringify(digiflazzResult)]
       );
       await connection.commit();
@@ -953,8 +1221,8 @@ app.post('/api/transactions/topup', authenticate, async (req, res) => {
       [req.user.id, 'purchase', sellPrice, balanceBefore, balanceAfter, `Pembelian ${product_name} - ${customer_no}`, req.user.id]
     );
     await connection.execute(
-      `INSERT INTO transactions (user_id, ref_id, customer_no, buyer_sku_code, product_name, category, brand, price, selling_price, status, sn, message, digiflazz_response)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO transactions (user_id, ref_id, customer_no, buyer_sku_code, product_name, category, brand, transaction_type, price, selling_price, status, sn, message, digiflazz_response)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'prepaid', ?, ?, ?, ?, ?, ?)`,
       [req.user.id, refId, customer_no, buyer_sku_code, product_name || buyer_sku_code, category, brand, basePrice, sellPrice, status, sn, message, JSON.stringify(digiflazzResult)]
     );
 
@@ -984,6 +1252,225 @@ app.post('/api/transactions/topup', authenticate, async (req, res) => {
     await connection.rollback();
     console.error(err);
     res.status(500).json({ success: false, message: 'Terjadi kesalahan saat transaksi' });
+  } finally {
+    connection.release();
+  }
+});
+
+app.post('/api/transactions/pasca/inquiry', authenticate, async (req, res) => {
+  try {
+    const { buyer_sku_code, customer_no, product_name, category, brand } = req.body;
+
+    if (!buyer_sku_code || !customer_no) {
+      return res.status(400).json({ success: false, message: 'Data inquiry tidak lengkap' });
+    }
+    if (!DIGIFLAZZ_USERNAME || !DIGIFLAZZ_API_KEY) {
+      return res.status(503).json({ success: false, message: 'Digiflazz API belum dikonfigurasi' });
+    }
+
+    const refId = generateRefId();
+    const digiflazzResult = await processDigiflazzPasca('inq-pasca', refId, buyer_sku_code, customer_no);
+    const data = digiflazzResult?.data;
+
+    if (!data || mapDigiflazzStatus(data.status) === 'failed') {
+      return res.status(400).json({
+        success: false,
+        message: data?.message || 'Gagal cek tagihan',
+      });
+    }
+
+    const basePrice = parseFloat(data.price) || parseFloat(data.selling_price) || 0;
+    const sellingPrice = calcPascaSellingPrice(data.selling_price || data.price);
+
+    await pool.execute(
+      `INSERT INTO pasca_inquiries
+        (user_id, ref_id, buyer_sku_code, customer_no, product_name, category, brand, base_price, selling_price, customer_name, inquiry_response, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 1 DAY))`,
+      [
+        req.user.id,
+        refId,
+        buyer_sku_code,
+        customer_no,
+        product_name || data.product_name || buyer_sku_code,
+        category || data.category || null,
+        brand || data.brand || null,
+        basePrice,
+        sellingPrice,
+        data.customer_name || null,
+        JSON.stringify(digiflazzResult),
+      ]
+    );
+
+    res.json({
+      success: true,
+      message: 'Tagihan ditemukan',
+      data: {
+        ref_id: refId,
+        customer_no: data.customer_no,
+        customer_name: data.customer_name,
+        buyer_sku_code,
+        product_name: product_name || data.product_name || buyer_sku_code,
+        base_price: basePrice,
+        selling_price: sellingPrice,
+        admin: data.admin,
+        periode: data.periode,
+        desc: data.desc,
+        message: data.message,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat cek tagihan' });
+  }
+});
+
+app.post('/api/transactions/pasca/pay', authenticate, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const { ref_id } = req.body;
+
+    if (!ref_id) {
+      return res.status(400).json({ success: false, message: 'Ref ID inquiry wajib diisi' });
+    }
+    if (!DIGIFLAZZ_USERNAME || !DIGIFLAZZ_API_KEY) {
+      return res.status(503).json({ success: false, message: 'Digiflazz API belum dikonfigurasi' });
+    }
+
+    await connection.beginTransaction();
+
+    const [inquiries] = await connection.execute(
+      `SELECT * FROM pasca_inquiries WHERE ref_id = ? AND user_id = ? FOR UPDATE`,
+      [ref_id, req.user.id]
+    );
+
+    if (!inquiries.length) {
+      await connection.rollback();
+      return res.status(404).json({ success: false, message: 'Data inquiry tidak ditemukan' });
+    }
+
+    const inquiry = inquiries[0];
+    if (inquiry.paid_at) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Tagihan ini sudah dibayar' });
+    }
+    if (new Date(inquiry.expires_at) < new Date()) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Inquiry kedaluwarsa, silakan cek tagihan ulang' });
+    }
+
+    const sellPrice = parseFloat(inquiry.selling_price);
+    const basePrice = parseFloat(inquiry.base_price);
+
+    const [users] = await connection.execute('SELECT * FROM users WHERE id = ? FOR UPDATE', [req.user.id]);
+    const balanceBefore = parseFloat(users[0].balance);
+
+    if (balanceBefore < sellPrice) {
+      await connection.rollback();
+      return res.status(400).json({ success: false, message: 'Saldo tidak mencukupi' });
+    }
+
+    const digiflazzResult = await processDigiflazzPasca(
+      'pay-pasca',
+      inquiry.ref_id,
+      inquiry.buyer_sku_code,
+      inquiry.customer_no
+    );
+    const data = digiflazzResult?.data;
+    let status = 'failed';
+    let sn = null;
+    let message = 'Pembayaran gagal';
+
+    if (data) {
+      status = mapDigiflazzStatus(data.status);
+      sn = data.sn || null;
+      message = data.message || message;
+    }
+
+    if (status === 'failed') {
+      await connection.execute(
+        `INSERT INTO transactions (user_id, ref_id, customer_no, buyer_sku_code, product_name, category, brand, transaction_type, price, selling_price, status, sn, message, digiflazz_response)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pasca', ?, ?, ?, ?, ?, ?)`,
+        [
+          req.user.id,
+          inquiry.ref_id,
+          inquiry.customer_no,
+          inquiry.buyer_sku_code,
+          inquiry.product_name,
+          inquiry.category,
+          inquiry.brand,
+          basePrice,
+          sellPrice,
+          status,
+          sn,
+          message,
+          JSON.stringify(digiflazzResult),
+        ]
+      );
+      await connection.commit();
+      await logActivity(req.user.id, 'transaction_failed', `Bayar tagihan gagal ${inquiry.customer_no}`, { refId: ref_id }, req.ip);
+      return res.status(400).json({ success: false, message, data: { ref_id, status } });
+    }
+
+    const balanceAfter = balanceBefore - sellPrice;
+    await connection.execute('UPDATE users SET balance = ? WHERE id = ?', [balanceAfter, req.user.id]);
+    await connection.execute(
+      'INSERT INTO balance_transactions (user_id, type, amount, balance_before, balance_after, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [
+        req.user.id,
+        'purchase',
+        sellPrice,
+        balanceBefore,
+        balanceAfter,
+        `Bayar tagihan ${inquiry.product_name} - ${inquiry.customer_no}`,
+        req.user.id,
+      ]
+    );
+    await connection.execute(
+      `INSERT INTO transactions (user_id, ref_id, customer_no, buyer_sku_code, product_name, category, brand, transaction_type, price, selling_price, status, sn, message, digiflazz_response)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pasca', ?, ?, ?, ?, ?, ?)`,
+      [
+        req.user.id,
+        inquiry.ref_id,
+        inquiry.customer_no,
+        inquiry.buyer_sku_code,
+        inquiry.product_name,
+        inquiry.category,
+        inquiry.brand,
+        basePrice,
+        sellPrice,
+        status,
+        sn,
+        message,
+        JSON.stringify(digiflazzResult),
+      ]
+    );
+    await connection.execute('UPDATE pasca_inquiries SET paid_at = NOW() WHERE id = ?', [inquiry.id]);
+    await connection.commit();
+
+    await logActivity(
+      req.user.id,
+      'transaction',
+      `Bayar tagihan ${inquiry.product_name} - ${inquiry.customer_no} - Rp ${sellPrice.toLocaleString('id-ID')}`,
+      { refId: ref_id, status, type: 'pasca' },
+      req.ip
+    );
+
+    res.json({
+      success: true,
+      message: status === 'pending' ? 'Pembayaran pending, mohon tunggu' : 'Pembayaran berhasil',
+      data: {
+        ref_id,
+        status,
+        sn,
+        message,
+        balance_after: balanceAfter,
+        selling_price: sellPrice,
+      },
+    });
+  } catch (err) {
+    await connection.rollback();
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat pembayaran' });
   } finally {
     connection.release();
   }
@@ -1071,11 +1558,19 @@ app.post('/api/transactions/:id/check-status', authenticate, async (req, res) =>
       return res.status(503).json({ success: false, message: 'Digiflazz API belum dikonfigurasi' });
     }
 
-    const digiflazzResult = await processDigiflazzTopup(
-      transaction.ref_id,
-      transaction.buyer_sku_code,
-      transaction.customer_no
-    );
+    const isPasca = transaction.transaction_type === 'pasca';
+    const digiflazzResult = isPasca
+      ? await processDigiflazzPasca(
+          'pay-pasca',
+          transaction.ref_id,
+          transaction.buyer_sku_code,
+          transaction.customer_no
+        )
+      : await processDigiflazzTopup(
+          transaction.ref_id,
+          transaction.buyer_sku_code,
+          transaction.customer_no
+        );
     const data = digiflazzResult?.data;
     if (!data) {
       return res.status(502).json({

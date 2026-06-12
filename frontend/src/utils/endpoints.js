@@ -18,6 +18,7 @@ export const API_ENDPOINTS = {
   },
   PRODUCTS: {
     PREPAID: '/products/prepaid',
+    PASCA: '/products/pasca',
     BRANDS: '/products/brands',
     CATEGORIES: '/products/categories',
     SERVICES: '/products/services',
@@ -27,6 +28,8 @@ export const API_ENDPOINTS = {
     LIST: '/transactions',
     DETAIL: (id) => `/transactions/${id}`,
     TOPUP: '/transactions/topup',
+    PASCA_INQUIRY: '/transactions/pasca/inquiry',
+    PASCA_PAY: '/transactions/pasca/pay',
     CHECK_STATUS: (id) => `/transactions/${id}/check-status`,
   },
   ACTIVITY_LOGS: {
