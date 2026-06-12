@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import { RefreshCw } from 'lucide-react';
 import Header from '../components/layout/Header';
 import SearchInput from '../components/ui/SearchInput';
 import LoadingSpinner from '../components/ui/LoadingSpinner';
 import EmptyState from '../components/ui/EmptyState';
 import Pagination from '../components/ui/Pagination';
 import { useDebounce } from '../hooks/useDebounce';
-import { get, formatCurrency, formatDate, getErrorMessage } from '../utils/request';
+import { get, post, formatCurrency, formatDate, getErrorMessage } from '../utils/request';
 import { API_ENDPOINTS } from '../utils/endpoints';
 
 const statusColors = {
@@ -23,6 +24,7 @@ const Transactions = () => {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 1 });
+  const [checkingId, setCheckingId] = useState(null);
 
   const debouncedSearch = useDebounce(search);
 
@@ -47,6 +49,19 @@ const Transactions = () => {
   useEffect(() => {
     fetchData();
   }, [debouncedSearch, status, pagination.page, pagination.limit]);
+
+  const handleCheckStatus = async (tx) => {
+    setCheckingId(tx.id);
+    try {
+      const res = await post(API_ENDPOINTS.TRANSACTIONS.CHECK_STATUS(tx.id));
+      toast.success(res.message || 'Status diperbarui');
+      fetchData();
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setCheckingId(null);
+    }
+  };
 
   return (
     <div>
@@ -91,7 +106,23 @@ const Transactions = () => {
                   <span className="text-gray-400 text-xs">{formatDate(tx.created_at)}</span>
                 </div>
                 {tx.sn && <p className="text-xs text-gray-500 mt-1">SN: {tx.sn}</p>}
-                <p className="text-xs text-gray-400 mt-1">Ref: {tx.ref_id}</p>
+                {tx.message && tx.status !== 'success' && (
+                  <p className="text-xs text-gray-500 mt-1">{tx.message}</p>
+                )}
+                <div className="flex items-center justify-between mt-2">
+                  <p className="text-xs text-gray-400">Ref: {tx.ref_id}</p>
+                  {tx.status === 'pending' && (
+                    <button
+                      type="button"
+                      onClick={() => handleCheckStatus(tx)}
+                      disabled={checkingId === tx.id}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-yellow-50 text-yellow-700 border border-yellow-200 disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${checkingId === tx.id ? 'animate-spin' : ''}`} />
+                      {checkingId === tx.id ? 'Mengecek...' : 'Cek Status'}
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>

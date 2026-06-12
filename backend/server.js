@@ -218,6 +218,66 @@ const mapDigiflazzStatus = (status) => {
   return 'failed';
 };
 
+const parseDigiflazzPayload = (body) => {
+  if (!body || typeof body !== 'object') return null;
+  if (body.data && typeof body.data === 'object') return body.data;
+  if (body.ref_id) return body;
+  return null;
+};
+
+const hasRefundForTransaction = async (connection, transaction) => {
+  const [rows] = await connection.execute(
+    `SELECT id FROM balance_transactions WHERE user_id = ? AND type = 'refund' AND note LIKE ? LIMIT 1`,
+    [transaction.user_id, `%${transaction.ref_id}%`]
+  );
+  return rows.length > 0;
+};
+
+const applyTransactionStatusUpdate = async (connection, transaction, digiflazzData, fullResponse = null) => {
+  const newStatus = mapDigiflazzStatus(digiflazzData.status);
+  const oldStatus = transaction.status;
+  const sn = digiflazzData.sn || transaction.sn || null;
+  const message = digiflazzData.message || transaction.message || null;
+  const responseJson = JSON.stringify(fullResponse || digiflazzData);
+
+  await connection.execute(
+    `UPDATE transactions SET status = ?, sn = ?, message = ?, digiflazz_response = ?, updated_at = NOW() WHERE id = ?`,
+    [newStatus, sn, message, responseJson, transaction.id]
+  );
+
+  let refunded = false;
+  let balanceAfter = null;
+
+  if (oldStatus === 'pending' && newStatus === 'failed') {
+    const alreadyRefunded = await hasRefundForTransaction(connection, transaction);
+    if (!alreadyRefunded) {
+      const [users] = await connection.execute('SELECT * FROM users WHERE id = ? FOR UPDATE', [transaction.user_id]);
+      if (users.length) {
+        const balanceBefore = parseFloat(users[0].balance);
+        const refundAmount = parseFloat(transaction.selling_price);
+        balanceAfter = balanceBefore + refundAmount;
+
+        await connection.execute('UPDATE users SET balance = ? WHERE id = ?', [balanceAfter, transaction.user_id]);
+        await connection.execute(
+          'INSERT INTO balance_transactions (user_id, type, amount, balance_before, balance_after, note, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          [
+            transaction.user_id,
+            'refund',
+            refundAmount,
+            balanceBefore,
+            balanceAfter,
+            `Refund transaksi gagal ${transaction.ref_id}`,
+            null,
+          ]
+        );
+        refunded = true;
+      }
+    }
+  }
+
+  return { oldStatus, newStatus, sn, message, refunded, balanceAfter };
+};
+
 // ─── Auth Middleware ───────────────────────────────────────────────────────
 
 const authenticate = async (req, res, next) => {
@@ -989,6 +1049,157 @@ app.get('/api/transactions/:id', authenticate, async (req, res) => {
     res.json({ success: true, data: rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+  }
+});
+
+app.post('/api/transactions/:id/check-status', authenticate, async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const [rows] = await connection.execute('SELECT * FROM transactions WHERE id = ?', [req.params.id]);
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Transaksi tidak ditemukan' });
+    }
+
+    const transaction = rows[0];
+    if (req.user.role === 'user' && transaction.user_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Akses ditolak' });
+    }
+    if (transaction.status !== 'pending') {
+      return res.status(400).json({ success: false, message: 'Hanya transaksi pending yang bisa dicek ulang' });
+    }
+    if (!DIGIFLAZZ_USERNAME || !DIGIFLAZZ_API_KEY) {
+      return res.status(503).json({ success: false, message: 'Digiflazz API belum dikonfigurasi' });
+    }
+
+    const digiflazzResult = await processDigiflazzTopup(
+      transaction.ref_id,
+      transaction.buyer_sku_code,
+      transaction.customer_no
+    );
+    const data = digiflazzResult?.data;
+    if (!data) {
+      return res.status(502).json({
+        success: false,
+        message: digiflazzResult?.message || 'Gagal memeriksa status ke Digiflazz',
+      });
+    }
+
+    await connection.beginTransaction();
+    const [locked] = await connection.execute('SELECT * FROM transactions WHERE id = ? FOR UPDATE', [transaction.id]);
+    const current = locked[0];
+
+    if (current.status !== 'pending') {
+      await connection.commit();
+      return res.json({
+        success: true,
+        message: 'Status transaksi sudah diperbarui',
+        data: { status: current.status, sn: current.sn, message: current.message },
+      });
+    }
+
+    const result = await applyTransactionStatusUpdate(connection, current, data, digiflazzResult);
+    await connection.commit();
+
+    if (result.refunded) {
+      await logActivity(
+        current.user_id,
+        'transaction_refund',
+        `Refund otomatis transaksi gagal ${current.ref_id}`,
+        { refId: current.ref_id, amount: current.selling_price },
+        req.ip
+      );
+    }
+    if (result.oldStatus !== result.newStatus) {
+      await logActivity(
+        current.user_id,
+        'transaction_status_update',
+        `Status transaksi ${current.ref_id}: ${result.oldStatus} → ${result.newStatus}`,
+        { refId: current.ref_id, source: 'check_status' },
+        req.ip
+      );
+    }
+
+    const statusMessages = {
+      success: 'Transaksi berhasil',
+      pending: 'Transaksi masih diproses',
+      failed: result.refunded ? 'Transaksi gagal, saldo telah dikembalikan' : 'Transaksi gagal',
+    };
+
+    res.json({
+      success: true,
+      message: statusMessages[result.newStatus] || 'Status diperbarui',
+      data: {
+        status: result.newStatus,
+        sn: result.sn,
+        message: result.message,
+        refunded: result.refunded,
+        balance_after: result.balanceAfter,
+      },
+    });
+  } catch (err) {
+    await connection.rollback();
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan saat cek status' });
+  } finally {
+    connection.release();
+  }
+});
+
+// ─── Digiflazz Webhook ─────────────────────────────────────────────────────
+// Daftarkan URL di panel Digiflazz: Pengaturan Koneksi API → Webhook
+// Contoh: https://api.kingcreativestudio.my.id/raca-cell/api/webhooks/digiflazz
+
+app.post('/api/webhooks/digiflazz', async (req, res) => {
+  const connection = await pool.getConnection();
+  try {
+    const event = req.headers['x-digiflazz-event'] || 'unknown';
+    const payload = parseDigiflazzPayload(req.body);
+    const refId = payload?.ref_id;
+
+    if (!refId) {
+      return res.status(400).json({ ok: false, message: 'ref_id tidak ditemukan' });
+    }
+
+    await connection.beginTransaction();
+    const [rows] = await connection.execute('SELECT * FROM transactions WHERE ref_id = ? FOR UPDATE', [refId]);
+
+    if (!rows.length) {
+      await connection.commit();
+      console.log(`[webhook] ${event} ref_id=${refId} — transaksi tidak ditemukan`);
+      return res.status(200).json({ ok: true, message: 'Transaksi tidak ditemukan' });
+    }
+
+    const transaction = rows[0];
+    const result = await applyTransactionStatusUpdate(connection, transaction, payload, req.body);
+    await connection.commit();
+
+    if (result.refunded) {
+      await logActivity(
+        transaction.user_id,
+        'transaction_refund',
+        `Refund otomatis transaksi gagal ${refId} (webhook)`,
+        { refId, amount: transaction.selling_price, event },
+        req.ip
+      );
+    }
+    if (result.oldStatus !== result.newStatus) {
+      await logActivity(
+        transaction.user_id,
+        'transaction_status_update',
+        `Status transaksi ${refId}: ${result.oldStatus} → ${result.newStatus} (webhook)`,
+        { refId, event, source: 'webhook' },
+        req.ip
+      );
+    }
+
+    console.log(`[webhook] ${event} ref_id=${refId} ${result.oldStatus} → ${result.newStatus}`);
+    res.status(200).json({ ok: true, ref_id: refId, status: result.newStatus, refunded: result.refunded });
+  } catch (err) {
+    await connection.rollback();
+    console.error('[webhook] error:', err);
+    res.status(500).json({ ok: false, message: 'Internal error' });
+  } finally {
+    connection.release();
   }
 });
 

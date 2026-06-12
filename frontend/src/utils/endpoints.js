@@ -27,6 +27,7 @@ export const API_ENDPOINTS = {
     LIST: '/transactions',
     DETAIL: (id) => `/transactions/${id}`,
     TOPUP: '/transactions/topup',
+    CHECK_STATUS: (id) => `/transactions/${id}/check-status`,
   },
   ACTIVITY_LOGS: {
     LIST: '/activity-logs',
