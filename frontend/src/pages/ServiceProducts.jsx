@@ -209,8 +209,16 @@ const ServiceProducts = () => {
             {products.map((product) => (
               <button
                 key={product.buyer_sku_code}
-                onClick={() => setSelectedProduct(product)}
-                className="w-full flex items-center gap-3 bg-white border rounded-xl p-3 hover:shadow-sm transition-shadow text-left"
+                onClick={() => {
+                  if (product.is_buyable === false) {
+                    toast.error('Produk belum diaktifkan di Digiflazz. Hubungi admin.');
+                    return;
+                  }
+                  setSelectedProduct(product);
+                }}
+                className={`w-full flex items-center gap-3 bg-white border rounded-xl p-3 hover:shadow-sm transition-shadow text-left ${
+                  product.is_buyable === false ? 'opacity-60' : ''
+                }`}
               >
                 <div className={`w-10 h-10 ${service.color} rounded-xl flex items-center justify-center flex-shrink-0`}>
                   <Icon className="w-5 h-5 text-white" />
@@ -218,8 +226,14 @@ const ServiceProducts = () => {
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-900 text-sm truncate">{product.product_name}</p>
                   <p className="text-xs text-gray-500">{product.brand} • {product.category}</p>
+                  {product.desc && isPasca && (
+                    <p className="text-[10px] text-gray-400 mt-0.5 truncate">{product.desc}</p>
+                  )}
                   {isPasca && (
                     <p className="text-[10px] text-gray-400 mt-0.5">Biaya admin: {formatCurrency(product.admin)}</p>
+                  )}
+                  {product.is_buyable === false && (
+                    <p className="text-[10px] text-amber-600 font-medium mt-0.5">Belum aktif di akun Digiflazz</p>
                   )}
                 </div>
                 <div className="text-right flex-shrink-0">

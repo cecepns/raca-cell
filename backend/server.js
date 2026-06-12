@@ -202,8 +202,56 @@ const getDigiflazzPascaPriceList = async (forceRefresh = false) => {
 };
 
 const PREPAID_SERVICE_IDS = ['pulsa', 'data', 'voucher', 'game', 'pln', 'ewallet'];
-const PASCA_SERVICE_IDS = ['pln-pasca', 'pdam-pasca', 'bpjs-pasca'];
+const PASCA_SERVICE_IDS = ['pln-pasca', 'pdam-pasca', 'bpjs-kesehatan-pasca', 'bpjs-tk-pasca'];
 const SERVICE_IDS = [...PREPAID_SERVICE_IDS, ...PASCA_SERVICE_IDS];
+
+const getPascaHaystack = (product) =>
+  [product.product_name, product.brand, product.buyer_sku_code, product.desc, product.category, product.seller_name]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+
+const classifyPascaService = (product) => {
+  const haystack = getPascaHaystack(product);
+  const brand = (product.brand || '').toLowerCase().trim();
+  const sku = (product.buyer_sku_code || '').toLowerCase().trim();
+  const name = (product.product_name || '').toLowerCase().trim();
+
+  const isBpjsTk =
+    /ketenagakerjaan|ketenaga kerjaan|bpjstk|bpjs tk|tenaga kerja|\bjht\b|\bjkk\b|\bjkm\b/.test(haystack) ||
+    /^bpjstk/.test(sku) ||
+    (brand.includes('bpjs') && /tk|tenaga kerja|ketenaga/.test(haystack));
+
+  const isBpjsKesehatan =
+    /bpjs|kesehatan|bpjskes|bpjskesehatan/.test(haystack) ||
+    /^bpjs$|^bpjskes/.test(sku);
+
+  const isPdam =
+    brand === 'pdam' ||
+    brand.includes('pdam') ||
+    brand === 'pam' ||
+    /pdam|pam jaya|aetra|tagihan air|rekening air|air minum/.test(haystack);
+
+  const isPln =
+    brand === 'pln' ||
+    brand.includes('pln') ||
+    /pln|listrik|postpaid/.test(haystack) ||
+    sku === 'pln';
+
+  if (isBpjsTk) return 'bpjs-tk-pasca';
+  if (isBpjsKesehatan && !isBpjsTk) return 'bpjs-kesehatan-pasca';
+  if (isPdam && !isPln && !isBpjsKesehatan && !isBpjsTk) return 'pdam-pasca';
+  if (isPln && !isPdam && !isBpjsKesehatan && !isBpjsTk) return 'pln-pasca';
+
+  // Fallback: brand PDAM/PLN dari struktur Digiflazz (product_name bisa regional, mis. "aetra")
+  if (brand === 'pdam') return 'pdam-pasca';
+  if (brand === 'pln' || name.includes('pln')) return 'pln-pasca';
+
+  return null;
+};
+
+const isPascaListed = (product) => Boolean(product.seller_product_status);
+const isPascaBuyable = (product) => Boolean(product.buyer_product_status && product.seller_product_status);
 
 const isEwalletProduct = (product) => {
   const category = (product.category || '').toLowerCase();
@@ -275,38 +323,7 @@ const matchPrepaidService = (product, service) => {
 
 const matchPascaService = (product, service) => {
   if (!service || !PASCA_SERVICE_IDS.includes(service)) return true;
-
-  const category = (product.category || '').toLowerCase();
-  const brand = (product.brand || '').toLowerCase();
-  const name = (product.product_name || '').toLowerCase();
-
-  switch (service) {
-    case 'pln-pasca':
-      return (
-        (brand.includes('pln') || category.includes('pln') || name.includes('pln') || name.includes('listrik')) &&
-        !brand.includes('pdam') &&
-        !name.includes('pdam') &&
-        !brand.includes('bpjs') &&
-        !name.includes('bpjs')
-      );
-    case 'pdam-pasca':
-      return (
-        brand.includes('pdam') ||
-        category.includes('pdam') ||
-        name.includes('pdam') ||
-        name.includes('air minum') ||
-        name.includes('rekening air')
-      );
-    case 'bpjs-pasca':
-      return (
-        brand.includes('bpjs') ||
-        category.includes('bpjs') ||
-        name.includes('bpjs') ||
-        name.includes('kesehatan')
-      );
-    default:
-      return true;
-  }
+  return classifyPascaService(product) === service;
 };
 
 const mapPrepaidProducts = (products) =>
@@ -326,7 +343,7 @@ const mapPrepaidProducts = (products) =>
 
 const mapPascaProducts = (products) =>
   products
-    .filter((p) => p.buyer_product_status && p.seller_product_status)
+    .filter((p) => isPascaListed(p))
     .map((p) => ({
       buyer_sku_code: p.buyer_sku_code,
       product_name: p.product_name,
@@ -336,6 +353,7 @@ const mapPascaProducts = (products) =>
       commission: parseFloat(p.commission) || 0,
       desc: p.desc,
       is_pasca: true,
+      is_buyable: isPascaBuyable(p),
     }));
 
 const processDigiflazzTopup = async (refId, buyerSkuCode, customerNo) => {
@@ -1081,9 +1099,10 @@ app.get('/api/products/services', authenticate, async (req, res) => {
       const isPasca = PASCA_SERVICE_IDS.includes(id);
       const source = isPasca ? allPascaRaw : allPrepaidRaw;
       const matcher = isPasca ? matchPascaService : matchPrepaidService;
+      const isListed = (p) => (isPasca ? isPascaListed(p) : Boolean(p.buyer_product_status && p.seller_product_status));
       return {
         id,
-        total: source.filter((p) => p.buyer_product_status && p.seller_product_status && matcher(p, id)).length,
+        total: source.filter((p) => isListed(p) && matcher(p, id)).length,
       };
     });
 
