@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS users (
   name VARCHAR(100) NOT NULL,
   email VARCHAR(150) NOT NULL UNIQUE,
   phone VARCHAR(20) NOT NULL,
+  partner_name VARCHAR(100) NULL DEFAULT NULL,
   password VARCHAR(255) NOT NULL,
   role ENUM('owner', 'admin', 'user') NOT NULL DEFAULT 'user',
   balance DECIMAL(15, 2) NOT NULL DEFAULT 0.00,

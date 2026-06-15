@@ -6,6 +6,9 @@ export const buildWhatsAppUrl = (phone, message) => {
   return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
 };
 
+export const buildWhatsAppShareUrl = (message) =>
+  `https://wa.me/?text=${encodeURIComponent(message)}`;
+
 export const buildTopupWhatsAppMessage = (user, amount) =>
   `Halo Admin Raca Cell,\n\nSaya ingin request topup saldo:\n` +
   `Nama: ${user?.name}\n` +

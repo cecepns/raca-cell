@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { get, post } from '../utils/request';
+import { get, post, put } from '../utils/request';
 import { API_ENDPOINTS } from '../utils/endpoints';
 
 const AuthContext = createContext(null);
@@ -64,9 +64,16 @@ export const AuthProvider = ({ children }) => {
     });
   };
 
+  const updatePartnerName = async (partnerName) => {
+    const res = await put(API_ENDPOINTS.AUTH.UPDATE_PROFILE, { partner_name: partnerName });
+    setUser(res.data);
+    localStorage.setItem('user', JSON.stringify(res.data));
+    return res;
+  };
+
   return (
     <AuthContext.Provider
-      value={{ user, loading, isAdmin, isOwner, login, register, logout, refreshProfile, updateBalance }}
+      value={{ user, loading, isAdmin, isOwner, login, register, logout, refreshProfile, updateBalance, updatePartnerName }}
     >
       {children}
     </AuthContext.Provider>

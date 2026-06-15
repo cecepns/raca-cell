@@ -461,7 +461,7 @@ const authenticate = async (req, res, next) => {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET);
     const [rows] = await pool.execute(
-      'SELECT id, name, email, phone, role, balance, status FROM users WHERE id = ?',
+      'SELECT id, name, email, phone, partner_name, role, balance, status FROM users WHERE id = ?',
       [decoded.id]
     );
     if (!rows.length || rows[0].status !== 'active') {
@@ -640,6 +640,14 @@ const initDatabase = async () => {
       if (err.code !== 'ER_DUP_FIELDNAME') throw err;
     }
 
+    try {
+      await connection.query(
+        'ALTER TABLE users ADD COLUMN partner_name VARCHAR(100) NULL DEFAULT NULL AFTER phone'
+      );
+    } catch (err) {
+      if (err.code !== 'ER_DUP_FIELDNAME') throw err;
+    }
+
     const [owners] = await connection.query("SELECT id FROM users WHERE role = 'owner' LIMIT 1");
     if (!owners.length) {
       const hashed = await bcrypt.hash('password123', 10);
@@ -729,6 +737,33 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/auth/profile', authenticate, async (req, res) => {
   res.json({ success: true, data: req.user });
+});
+
+app.put('/api/auth/profile', authenticate, async (req, res) => {
+  try {
+    const partnerName = req.body.partner_name?.trim() ?? '';
+
+    if (partnerName.length > 100) {
+      return res.status(400).json({ success: false, message: 'Nama mitra maksimal 100 karakter' });
+    }
+
+    const value = partnerName || null;
+    await pool.execute('UPDATE users SET partner_name = ? WHERE id = ?', [value, req.user.id]);
+
+    const [rows] = await pool.execute(
+      'SELECT id, name, email, phone, partner_name, role, balance, status FROM users WHERE id = ?',
+      [req.user.id]
+    );
+
+    res.json({
+      success: true,
+      message: 'Profil berhasil diperbarui',
+      data: rows[0],
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+  }
 });
 
 // ─── Users Routes ────────────────────────────────────────────────────────────

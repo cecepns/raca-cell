@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { User, Mail, Phone, Wallet, Shield, LogOut, ChevronRight, Percent, MessageCircle, PlusCircle } from 'lucide-react';
+import { User, Mail, Phone, Wallet, Shield, LogOut, ChevronRight, Percent, MessageCircle, PlusCircle, Store, Save } from 'lucide-react';
 import { get } from '../utils/request';
 import { API_ENDPOINTS } from '../utils/endpoints';
 import toast from 'react-hot-toast';
@@ -11,18 +11,36 @@ import { formatCurrency } from '../utils/request';
 const roleLabels = { owner: 'Owner', admin: 'Admin', user: 'User' };
 
 const Profile = () => {
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, updatePartnerName } = useAuth();
   const navigate = useNavigate();
   const [contact, setContact] = useState(null);
+  const [partnerName, setPartnerName] = useState(user?.partner_name || '');
+  const [savingPartner, setSavingPartner] = useState(false);
 
   useEffect(() => {
     get(API_ENDPOINTS.SETTINGS.CONTACT).then((res) => setContact(res.data)).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    setPartnerName(user?.partner_name || '');
+  }, [user?.partner_name]);
+
   const handleLogout = () => {
     logout();
     toast.success('Berhasil keluar');
     navigate('/login');
+  };
+
+  const handleSavePartnerName = async () => {
+    setSavingPartner(true);
+    try {
+      await updatePartnerName(partnerName.trim());
+      toast.success('Nama mitra berhasil disimpan');
+    } catch (err) {
+      toast.error(err?.response?.data?.message || 'Gagal menyimpan nama mitra');
+    } finally {
+      setSavingPartner(false);
+    }
   };
 
   const menuItems = [
@@ -59,6 +77,35 @@ const Profile = () => {
             <InfoRow icon={Mail} label="Email" value={user?.email} />
             <InfoRow icon={Phone} label="No. HP" value={user?.phone} />
             <InfoRow icon={Wallet} label="Saldo" value={formatCurrency(user?.balance)} highlight />
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Store className="w-5 h-5 text-primary-600" />
+            <div>
+              <h3 className="font-semibold text-gray-900 text-sm">Nama Mitra</h3>
+              <p className="text-xs text-gray-500">Muncul di struk transaksi & saat dibagikan</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={partnerName}
+              onChange={(e) => setPartnerName(e.target.value)}
+              placeholder="Contoh: Toko Jaya Cell"
+              maxLength={100}
+              className="flex-1 px-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+            />
+            <button
+              type="button"
+              onClick={handleSavePartnerName}
+              disabled={savingPartner}
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 bg-primary-600 text-white rounded-xl text-sm font-medium hover:bg-primary-700 disabled:opacity-50"
+            >
+              <Save className="w-4 h-4" />
+              {savingPartner ? '...' : 'Simpan'}
+            </button>
           </div>
         </div>
 
