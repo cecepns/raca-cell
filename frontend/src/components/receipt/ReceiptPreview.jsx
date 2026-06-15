@@ -6,13 +6,16 @@ const typeLabels = { prepaid: 'Prabayar', pasca: 'Pascabayar' };
 
 const ReceiptPreview = ({ transaction, partnerName, id = 'receipt-preview' }) => {
   const storeName = getReceiptStoreName(partnerName);
+  const hasPartner = !!partnerName?.trim();
 
   return (
     <div id={id} className="receipt-print bg-white text-black font-mono text-xs leading-relaxed p-4 max-w-[280px] mx-auto">
       <div className="divider border-t border-dashed border-black my-2" />
       <div className="center text-center">
         <p className="title font-bold text-sm">{storeName.toUpperCase()}</p>
-        <p className="subtitle text-[10px] text-gray-600">Raca Cell PPOB</p>
+        {!hasPartner && (
+          <p className="subtitle text-[10px] text-gray-600">Raca Cell PPOB</p>
+        )}
       </div>
       <div className="divider border-t border-dashed border-black my-2" />
 

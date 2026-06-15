@@ -13,10 +13,11 @@ export const getReceiptStoreName = (partnerName) => {
 
 export const buildReceiptText = (transaction, partnerName) => {
   const storeName = getReceiptStoreName(partnerName);
+  const hasPartner = !!partnerName?.trim();
   const lines = [
     divider,
     storeName.toUpperCase(),
-    'Raca Cell PPOB',
+    ...(hasPartner ? [] : ['Raca Cell PPOB']),
     divider,
     `Tanggal   : ${formatDate(transaction.created_at)}`,
     `Ref ID    : ${transaction.ref_id}`,
