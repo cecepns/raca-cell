@@ -8,11 +8,13 @@ export const API_ENDPOINTS = {
     REGISTER: '/auth/register',
     PROFILE: '/auth/profile',
     UPDATE_PROFILE: '/auth/profile',
+    CHANGE_PASSWORD: '/auth/change-password',
   },
   USERS: {
     LIST: '/users',
     DETAIL: (id) => `/users/${id}`,
     BALANCE: (id) => `/users/${id}/balance`,
+    RESET_PASSWORD: (id) => `/users/${id}/reset-password`,
   },
   BALANCE: {
     HISTORY: '/balance/history',

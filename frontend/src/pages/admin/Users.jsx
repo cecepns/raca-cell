@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Plus, Edit2, Trash2 } from 'lucide-react';
+import { Plus, Edit2, Trash2, KeyRound } from 'lucide-react';
 import Header from '../../components/layout/Header';
 import SearchInput from '../../components/ui/SearchInput';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
@@ -23,6 +23,10 @@ const Users = () => {
   const [editUser, setEditUser] = useState(null);
   const [form, setForm] = useState({ name: '', email: '', phone: '', password: '', role: 'user', status: 'active' });
   const [saving, setSaving] = useState(false);
+  const [resetPasswordModalOpen, setResetPasswordModalOpen] = useState(false);
+  const [resetTargetUser, setResetTargetUser] = useState(null);
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetSaving, setResetSaving] = useState(false);
 
   const debouncedSearch = useDebounce(search);
 
@@ -58,6 +62,12 @@ const Users = () => {
     setEditUser(user);
     setForm({ name: user.name, email: user.email, phone: user.phone, password: '', role: user.role, status: user.status });
     setModalOpen(true);
+  };
+
+  const openResetPassword = (user) => {
+    setResetTargetUser(user);
+    setResetPassword('');
+    setResetPasswordModalOpen(true);
   };
 
   const handleSave = async () => {
@@ -161,6 +171,11 @@ const Users = () => {
                     <button onClick={() => openEdit(user)} className="p-2 bg-gray-100 rounded-lg">
                       <Edit2 className="w-4 h-4 text-gray-600" />
                     </button>
+                    {(isOwner || user.role !== 'owner') && (
+                      <button onClick={() => openResetPassword(user)} className="p-2 bg-blue-50 rounded-lg">
+                        <KeyRound className="w-4 h-4 text-blue-600" />
+                      </button>
+                    )}
                     {isOwner && user.role !== 'owner' && (
                       <button onClick={() => handleDelete(user)} className="p-2 bg-red-50 rounded-lg">
                         <Trash2 className="w-4 h-4 text-red-500" />
@@ -235,6 +250,61 @@ const Users = () => {
             className="w-full bg-primary-600 text-white py-3 rounded-xl font-medium disabled:opacity-60"
           >
             {saving ? 'Menyimpan...' : 'Simpan'}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={resetPasswordModalOpen}
+        onClose={() => !resetSaving && setResetPasswordModalOpen(false)}
+        title="Reset Password User"
+      >
+        <div className="space-y-3">
+          {resetTargetUser && (
+            <div className="text-sm text-gray-700">
+              Atur ulang password untuk{' '}
+              <span className="font-semibold">
+                {resetTargetUser.name} ({resetTargetUser.email || resetTargetUser.phone})
+              </span>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Password Baru</label>
+            <input
+              type="password"
+              value={resetPassword}
+              onChange={(e) => setResetPassword(e.target.value)}
+              className="w-full px-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              placeholder="Minimal 6 karakter"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              if (!resetTargetUser) return;
+              if (!resetPassword) {
+                toast.error('Password baru wajib diisi');
+                return;
+              }
+              if (resetPassword.length < 6) {
+                toast.error('Password baru minimal 6 karakter');
+                return;
+              }
+              setResetSaving(true);
+              try {
+                await post(API_ENDPOINTS.USERS.RESET_PASSWORD(resetTargetUser.id), { password: resetPassword });
+                toast.success('Password user berhasil direset');
+                setResetPasswordModalOpen(false);
+              } catch (err) {
+                toast.error(getErrorMessage(err));
+              } finally {
+                setResetSaving(false);
+              }
+            }}
+            disabled={resetSaving}
+            className="w-full bg-primary-600 text-white py-3 rounded-xl font-medium disabled:opacity-60"
+          >
+            {resetSaving ? 'Menyimpan...' : 'Simpan Password Baru'}
           </button>
         </div>
       </Modal>

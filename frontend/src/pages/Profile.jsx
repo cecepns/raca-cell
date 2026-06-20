@@ -1,12 +1,13 @@
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { User, Mail, Phone, Wallet, Shield, LogOut, ChevronRight, Percent, MessageCircle, PlusCircle, Store, Save } from 'lucide-react';
-import { get } from '../utils/request';
+import { User, Mail, Phone, Wallet, Shield, LogOut, ChevronRight, Percent, MessageCircle, PlusCircle, Store, Save, KeyRound } from 'lucide-react';
+import { get, post, getErrorMessage } from '../utils/request';
 import { API_ENDPOINTS } from '../utils/endpoints';
 import toast from 'react-hot-toast';
 import Header from '../components/layout/Header';
 import { useAuth } from '../context/AuthContext';
 import { formatCurrency } from '../utils/request';
+import Modal from '../components/ui/Modal';
 
 const roleLabels = { owner: 'Owner', admin: 'Admin', user: 'User' };
 
@@ -16,6 +17,13 @@ const Profile = () => {
   const [contact, setContact] = useState(null);
   const [partnerName, setPartnerName] = useState(user?.partner_name || '');
   const [savingPartner, setSavingPartner] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    current_password: '',
+    new_password: '',
+    confirm_password: '',
+  });
+  const [changingPassword, setChangingPassword] = useState(false);
 
   useEffect(() => {
     get(API_ENDPOINTS.SETTINGS.CONTACT).then((res) => setContact(res.data)).catch(() => {});
@@ -40,6 +48,44 @@ const Profile = () => {
       toast.error(err?.response?.data?.message || 'Gagal menyimpan nama mitra');
     } finally {
       setSavingPartner(false);
+    }
+  };
+
+  const handleOpenChangePassword = () => {
+    setPasswordForm({
+      current_password: '',
+      new_password: '',
+      confirm_password: '',
+    });
+    setPasswordModalOpen(true);
+  };
+
+  const handleChangePassword = async () => {
+    if (!passwordForm.current_password || !passwordForm.new_password || !passwordForm.confirm_password) {
+      toast.error('Semua field password wajib diisi');
+      return;
+    }
+    if (passwordForm.new_password.length < 6) {
+      toast.error('Password baru minimal 6 karakter');
+      return;
+    }
+    if (passwordForm.new_password !== passwordForm.confirm_password) {
+      toast.error('Konfirmasi password tidak cocok');
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      await post(API_ENDPOINTS.AUTH.CHANGE_PASSWORD, {
+        current_password: passwordForm.current_password,
+        new_password: passwordForm.new_password,
+      });
+      toast.success('Password berhasil diganti');
+      setPasswordModalOpen(false);
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setChangingPassword(false);
     }
   };
 
@@ -78,6 +124,15 @@ const Profile = () => {
             <InfoRow icon={Phone} label="No. HP" value={user?.phone} />
             <InfoRow icon={Wallet} label="Saldo" value={formatCurrency(user?.balance)} highlight />
           </div>
+
+          <button
+            type="button"
+            onClick={handleOpenChangePassword}
+            className="mt-4 inline-flex items-center justify-center gap-2 w-full px-4 py-2.5 border border-primary-100 rounded-xl text-sm font-medium text-primary-700 bg-primary-50 hover:bg-primary-100"
+          >
+            <KeyRound className="w-4 h-4" />
+            Ganti Password
+          </button>
         </div>
 
         <div className="bg-white rounded-2xl border p-4">
@@ -143,6 +198,53 @@ const Profile = () => {
           Keluar
         </button>
       </div>
+
+      <Modal
+        isOpen={passwordModalOpen}
+        onClose={() => !changingPassword && setPasswordModalOpen(false)}
+        title="Ganti Password"
+      >
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Password Saat Ini</label>
+            <input
+              type="password"
+              value={passwordForm.current_password}
+              onChange={(e) => setPasswordForm({ ...passwordForm, current_password: e.target.value })}
+              className="w-full px-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              placeholder="Masukkan password saat ini"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Password Baru</label>
+            <input
+              type="password"
+              value={passwordForm.new_password}
+              onChange={(e) => setPasswordForm({ ...passwordForm, new_password: e.target.value })}
+              className="w-full px-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              placeholder="Minimal 6 karakter"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Konfirmasi Password Baru</label>
+            <input
+              type="password"
+              value={passwordForm.confirm_password}
+              onChange={(e) => setPasswordForm({ ...passwordForm, confirm_password: e.target.value })}
+              className="w-full px-3 py-2.5 border rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              placeholder="Ulangi password baru"
+            />
+          </div>
+          <button
+            type="button"
+            onClick={handleChangePassword}
+            disabled={changingPassword}
+            className="w-full bg-primary-600 text-white py-3 rounded-xl font-medium disabled:opacity-60"
+          >
+            {changingPassword ? 'Menyimpan...' : 'Simpan Password'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 };

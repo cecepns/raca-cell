@@ -1,6 +1,9 @@
 node_modules/
 dist/
 build/
+mobile/.expo/
+mobile/android/
+mobile/ios/
 .env
 .env.local
 *.log
