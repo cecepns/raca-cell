@@ -14,6 +14,7 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 // Nilai aktif selalu diambil dari tabel settings (diatur via Admin > Pengaturan Margin).
 const DEFAULT_MARGIN_PERCENT = parseFloat(process.env.MARKUP_PERCENT || '5');
 let marginPercent = DEFAULT_MARGIN_PERCENT;
+let productMargins = new Map();
 const DIGIFLAZZ_USERNAME = process.env.DIGIFLAZZ_USERNAME || 'pahuyog19VNg';
 const DIGIFLAZZ_API_KEY = process.env.DIGIFLAZZ_API_KEY || 'aa2808be-9fab-5583-83f7-854422993780';
 const DIGIFLAZZ_TESTING = process.env.DIGIFLAZZ_TESTING === 'true';
@@ -34,9 +35,17 @@ app.use(express.json());
 const digiflazzSign = (ref) =>
   crypto.createHash('md5').update(DIGIFLAZZ_USERNAME + DIGIFLAZZ_API_KEY + ref).digest('hex');
 
-const calcSellingPrice = (price) => {
+const getEffectiveMargin = (buyerSkuCode) => {
+  if (buyerSkuCode && productMargins.has(buyerSkuCode)) {
+    return productMargins.get(buyerSkuCode);
+  }
+  return marginPercent;
+};
+
+const calcSellingPrice = (price, buyerSkuCode) => {
   const base = parseFloat(price) || 0;
-  return Math.ceil(base + (base * marginPercent) / 100);
+  const margin = getEffectiveMargin(buyerSkuCode);
+  return Math.ceil(base + (base * margin) / 100);
 };
 
 const getSetting = async (key, defaultValue = '') => {
@@ -73,6 +82,20 @@ const loadMarginPercent = async () => {
     marginPercent = DEFAULT_MARGIN_PERCENT;
   }
   return marginPercent;
+};
+
+const loadProductMargins = async () => {
+  try {
+    const [rows] = await pool.execute(
+      'SELECT buyer_sku_code, margin_percent FROM product_margins'
+    );
+    productMargins = new Map(
+      rows.map((row) => [row.buyer_sku_code, parseFloat(row.margin_percent)])
+    );
+  } catch {
+    productMargins = new Map();
+  }
+  return productMargins;
 };
 
 const generateRefId = () => `RC${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
@@ -329,32 +352,46 @@ const matchPascaService = (product, service) => {
 const mapPrepaidProducts = (products) =>
   products
     .filter((p) => p.buyer_product_status && p.seller_product_status)
-    .map((p) => ({
-      buyer_sku_code: p.buyer_sku_code,
-      product_name: p.product_name,
-      category: p.category,
-      brand: p.brand,
-      type: p.type,
-      price: parseFloat(p.price),
-      selling_price: calcSellingPrice(p.price),
-      desc: p.desc,
-      is_pasca: false,
-    }));
+    .map((p) => {
+      const hasCustomMargin = productMargins.has(p.buyer_sku_code);
+      const effectiveMargin = getEffectiveMargin(p.buyer_sku_code);
+      return {
+        buyer_sku_code: p.buyer_sku_code,
+        product_name: p.product_name,
+        category: p.category,
+        brand: p.brand,
+        type: p.type,
+        price: parseFloat(p.price),
+        selling_price: calcSellingPrice(p.price, p.buyer_sku_code),
+        margin_percent: effectiveMargin,
+        custom_margin_percent: hasCustomMargin ? productMargins.get(p.buyer_sku_code) : null,
+        has_custom_margin: hasCustomMargin,
+        desc: p.desc,
+        is_pasca: false,
+      };
+    });
 
 const mapPascaProducts = (products) =>
   products
     .filter((p) => isPascaListed(p))
-    .map((p) => ({
-      buyer_sku_code: p.buyer_sku_code,
-      product_name: p.product_name,
-      category: p.category,
-      brand: p.brand,
-      admin: parseFloat(p.admin) || 0,
-      commission: parseFloat(p.commission) || 0,
-      desc: p.desc,
-      is_pasca: true,
-      is_buyable: isPascaBuyable(p),
-    }));
+    .map((p) => {
+      const hasCustomMargin = productMargins.has(p.buyer_sku_code);
+      const effectiveMargin = getEffectiveMargin(p.buyer_sku_code);
+      return {
+        buyer_sku_code: p.buyer_sku_code,
+        product_name: p.product_name,
+        category: p.category,
+        brand: p.brand,
+        admin: parseFloat(p.admin) || 0,
+        commission: parseFloat(p.commission) || 0,
+        margin_percent: effectiveMargin,
+        custom_margin_percent: hasCustomMargin ? productMargins.get(p.buyer_sku_code) : null,
+        has_custom_margin: hasCustomMargin,
+        desc: p.desc,
+        is_pasca: true,
+        is_buyable: isPascaBuyable(p),
+      };
+    });
 
 const processDigiflazzTopup = async (refId, buyerSkuCode, customerNo) => {
   const body = {
@@ -381,7 +418,8 @@ const processDigiflazzPasca = async (command, refId, buyerSkuCode, customerNo) =
   return callDigiflazz('/transaction', body);
 };
 
-const calcPascaSellingPrice = (digiflazzSellingPrice) => calcSellingPrice(digiflazzSellingPrice);
+const calcPascaSellingPrice = (digiflazzSellingPrice, buyerSkuCode) =>
+  calcSellingPrice(digiflazzSellingPrice, buyerSkuCode);
 
 const mapDigiflazzStatus = (status) => {
   const s = (status || '').toLowerCase();
@@ -648,6 +686,22 @@ const initDatabase = async () => {
       if (err.code !== 'ER_DUP_FIELDNAME') throw err;
     }
 
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS product_margins (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        buyer_sku_code VARCHAR(50) NOT NULL UNIQUE,
+        product_name VARCHAR(200) NOT NULL,
+        transaction_type ENUM('prepaid', 'pasca') NOT NULL DEFAULT 'prepaid',
+        margin_percent DECIMAL(5, 2) NOT NULL,
+        updated_by INT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+        INDEX idx_product_margins_sku (buyer_sku_code),
+        INDEX idx_product_margins_type (transaction_type)
+      )
+    `);
+
     const [owners] = await connection.query("SELECT id FROM users WHERE role = 'owner' LIMIT 1");
     if (!owners.length) {
       const hashed = await bcrypt.hash('password123', 10);
@@ -662,6 +716,7 @@ const initDatabase = async () => {
   }
 
   await loadMarginPercent();
+  await loadProductMargins();
 };
 
 // ─── Auth Routes ───────────────────────────────────────────────────────────
@@ -1209,6 +1264,147 @@ app.post('/api/products/refresh-cache', authenticate, authorize('owner', 'admin'
   }
 });
 
+app.get('/api/products/margins', authenticate, authorize('owner', 'admin'), async (req, res) => {
+  try {
+    const search = req.query.search?.trim().toLowerCase() || '';
+    const transactionType = req.query.transaction_type?.trim() || '';
+    const { page, limit, offset } = getPagination(req.query);
+
+    let query = 'SELECT * FROM product_margins WHERE 1=1';
+    const params = [];
+
+    if (search) {
+      query += ' AND (product_name LIKE ? OR buyer_sku_code LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`);
+    }
+    if (transactionType && ['prepaid', 'pasca'].includes(transactionType)) {
+      query += ' AND transaction_type = ?';
+      params.push(transactionType);
+    }
+
+    const [countRows] = await pool.execute(
+      query.replace('SELECT *', 'SELECT COUNT(*) as total'),
+      params
+    );
+    const total = countRows[0].total;
+
+    query += ' ORDER BY updated_at DESC LIMIT ? OFFSET ?';
+    params.push(limit, offset);
+
+    const [rows] = await pool.execute(query, params);
+
+    res.json({
+      success: true,
+      data: rows.map((row) => ({
+        ...row,
+        margin_percent: parseFloat(row.margin_percent),
+      })),
+      pagination: paginationMeta(page, limit, total),
+      global_margin_percent: marginPercent,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+  }
+});
+
+app.put('/api/products/margins/:buyer_sku_code', authenticate, authorize('owner', 'admin'), async (req, res) => {
+  try {
+    const buyerSkuCode = decodeURIComponent(req.params.buyer_sku_code || '').trim();
+    const { margin_percent, product_name, transaction_type } = req.body;
+    const value = parseFloat(margin_percent);
+
+    if (!buyerSkuCode) {
+      return res.status(400).json({ success: false, message: 'SKU produk wajib diisi' });
+    }
+    if (Number.isNaN(value) || value < 0 || value > 100) {
+      return res.status(400).json({ success: false, message: 'Margin harus antara 0% - 100%' });
+    }
+
+    const type = transaction_type === 'pasca' ? 'pasca' : 'prepaid';
+    const name = (product_name || buyerSkuCode).trim().slice(0, 200);
+
+    await pool.execute(
+      `INSERT INTO product_margins (buyer_sku_code, product_name, transaction_type, margin_percent, updated_by)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         product_name = VALUES(product_name),
+         transaction_type = VALUES(transaction_type),
+         margin_percent = VALUES(margin_percent),
+         updated_by = VALUES(updated_by)`,
+      [buyerSkuCode, name, type, value, req.user.id]
+    );
+
+    productMargins.set(buyerSkuCode, value);
+
+    await logActivity(
+      req.user.id,
+      'update_product_margin',
+      `Mengatur margin produk ${name} (${buyerSkuCode}) menjadi ${value}%`,
+      { buyer_sku_code: buyerSkuCode, margin_percent: value, transaction_type: type },
+      req.ip
+    );
+
+    res.json({
+      success: true,
+      message: 'Margin produk berhasil disimpan',
+      data: {
+        buyer_sku_code: buyerSkuCode,
+        product_name: name,
+        transaction_type: type,
+        margin_percent: value,
+        has_custom_margin: true,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+  }
+});
+
+app.delete('/api/products/margins/:buyer_sku_code', authenticate, authorize('owner', 'admin'), async (req, res) => {
+  try {
+    const buyerSkuCode = decodeURIComponent(req.params.buyer_sku_code || '').trim();
+
+    if (!buyerSkuCode) {
+      return res.status(400).json({ success: false, message: 'SKU produk wajib diisi' });
+    }
+
+    const [existing] = await pool.execute(
+      'SELECT product_name FROM product_margins WHERE buyer_sku_code = ? LIMIT 1',
+      [buyerSkuCode]
+    );
+
+    if (!existing.length) {
+      return res.status(404).json({ success: false, message: 'Margin khusus produk tidak ditemukan' });
+    }
+
+    await pool.execute('DELETE FROM product_margins WHERE buyer_sku_code = ?', [buyerSkuCode]);
+    productMargins.delete(buyerSkuCode);
+
+    await logActivity(
+      req.user.id,
+      'reset_product_margin',
+      `Menghapus margin khusus produk ${existing[0].product_name} (${buyerSkuCode}), kembali ke margin global ${marginPercent}%`,
+      { buyer_sku_code: buyerSkuCode },
+      req.ip
+    );
+
+    res.json({
+      success: true,
+      message: 'Margin produk dikembalikan ke pengaturan global',
+      data: {
+        buyer_sku_code: buyerSkuCode,
+        margin_percent: marginPercent,
+        has_custom_margin: false,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+  }
+});
+
 // ─── Transaction Routes ────────────────────────────────────────────────────
 
 app.post('/api/transactions/topup', authenticate, async (req, res) => {
@@ -1221,7 +1417,7 @@ app.post('/api/transactions/topup', authenticate, async (req, res) => {
     }
 
     const basePrice = parseFloat(price);
-    const sellPrice = calcSellingPrice(basePrice);
+    const sellPrice = calcSellingPrice(basePrice, buyer_sku_code);
 
     await connection.beginTransaction();
 
@@ -1334,7 +1530,7 @@ app.post('/api/transactions/pasca/inquiry', authenticate, async (req, res) => {
     }
 
     const basePrice = parseFloat(data.price) || parseFloat(data.selling_price) || 0;
-    const sellingPrice = calcPascaSellingPrice(data.selling_price || data.price);
+    const sellingPrice = calcPascaSellingPrice(data.selling_price || data.price, buyer_sku_code);
 
     await pool.execute(
       `INSERT INTO pasca_inquiries

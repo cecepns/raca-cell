@@ -100,6 +100,22 @@ ON DUPLICATE KEY UPDATE setting_key = setting_key;
 INSERT INTO settings (setting_key, setting_value) VALUES ('admin_whatsapp', '')
 ON DUPLICATE KEY UPDATE setting_key = setting_key;
 
+-- ─── 006: Product Margins (Per-Item Override) ─────────────────────────────
+
+CREATE TABLE IF NOT EXISTS product_margins (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  buyer_sku_code VARCHAR(50) NOT NULL UNIQUE,
+  product_name VARCHAR(200) NOT NULL,
+  transaction_type ENUM('prepaid', 'pasca') NOT NULL DEFAULT 'prepaid',
+  margin_percent DECIMAL(5, 2) NOT NULL,
+  updated_by INT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (updated_by) REFERENCES users(id) ON DELETE SET NULL,
+  INDEX idx_product_margins_sku (buyer_sku_code),
+  INDEX idx_product_margins_type (transaction_type)
+);
+
 -- ─── 003: Topup Requests ───────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS topup_requests (

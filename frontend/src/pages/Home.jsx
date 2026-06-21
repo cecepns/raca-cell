@@ -35,6 +35,7 @@ const Home = () => {
     { to: '/admin/saldo', icon: Wallet, label: 'Topup Saldo', color: 'bg-green-500' },
     { to: '/admin/logs', icon: History, label: 'Log Aktivitas', color: 'bg-orange-500' },
     { to: '/admin/margin', icon: Percent, label: 'Pengaturan', color: 'bg-indigo-500' },
+    { to: '/admin/product-margins', icon: Percent, label: 'Margin Produk', color: 'bg-violet-500' },
   ];
 
   return (

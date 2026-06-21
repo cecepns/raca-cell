@@ -21,6 +21,8 @@ const actionColors = {
   update_user: 'bg-yellow-100 text-yellow-700',
   delete_user: 'bg-red-100 text-red-700',
   update_margin: 'bg-indigo-100 text-indigo-700',
+  update_product_margin: 'bg-violet-100 text-violet-700',
+  reset_product_margin: 'bg-orange-100 text-orange-700',
   update_whatsapp: 'bg-green-100 text-green-700',
   topup_request: 'bg-emerald-100 text-emerald-700',
   topup_request_approve: 'bg-green-100 text-green-700',

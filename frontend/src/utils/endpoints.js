@@ -26,6 +26,10 @@ export const API_ENDPOINTS = {
     CATEGORIES: '/products/categories',
     SERVICES: '/products/services',
     REFRESH_CACHE: '/products/refresh-cache',
+    MARGINS: {
+      LIST: '/products/margins',
+      SET: (sku) => `/products/margins/${encodeURIComponent(sku)}`,
+    },
   },
   TRANSACTIONS: {
     LIST: '/transactions',

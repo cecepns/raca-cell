@@ -15,6 +15,7 @@ import Users from './pages/admin/Users';
 import Balance from './pages/admin/Balance';
 import ActivityLogs from './pages/admin/ActivityLogs';
 import MarginSettings from './pages/admin/MarginSettings';
+import ProductMargins from './pages/admin/ProductMargins';
 import TopupRequest from './pages/TopupRequest';
 import AdminTopupRequests from './pages/admin/TopupRequests';
 
@@ -75,6 +76,14 @@ const App = () => (
             element={
               <ProtectedRoute adminOnly>
                 <MarginSettings />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/product-margins"
+            element={
+              <ProtectedRoute adminOnly>
+                <ProductMargins />
               </ProtectedRoute>
             }
           />

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { ChevronRight, ArrowLeft } from 'lucide-react';
+import { ChevronRight, ArrowLeft, Percent, Edit2 } from 'lucide-react';
 import Header from '../components/layout/Header';
 import SearchInput from '../components/ui/SearchInput';
 import LoadingSpinner from '../components/ui/LoadingSpinner';
@@ -10,7 +10,7 @@ import Modal from '../components/ui/Modal';
 import Pagination from '../components/ui/Pagination';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../context/AuthContext';
-import { get, post, formatCurrency, getErrorMessage } from '../utils/request';
+import { get, post, put, del, formatCurrency, getErrorMessage } from '../utils/request';
 import { API_ENDPOINTS } from '../utils/endpoints';
 import { getServiceById, SERVICES } from '../constants/services';
 
@@ -18,14 +18,18 @@ const ServiceProducts = () => {
   const { serviceId } = useParams();
   const service = getServiceById(serviceId);
   const isPasca = service.type === 'pasca';
-  const { user, updateBalance, refreshProfile } = useAuth();
+  const { user, updateBalance, refreshProfile, isAdmin } = useAuth();
   const [products, setProducts] = useState([]);
   const [brands, setBrands] = useState([]);
+  const [globalMargin, setGlobalMargin] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedBrand, setSelectedBrand] = useState('');
   const [pagination, setPagination] = useState({ page: 1, limit: 10, total: 0, totalPages: 1 });
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [marginEditProduct, setMarginEditProduct] = useState(null);
+  const [marginInput, setMarginInput] = useState('');
+  const [savingMargin, setSavingMargin] = useState(false);
   const [customerNo, setCustomerNo] = useState('');
   const [processing, setProcessing] = useState(false);
   const [inquiryData, setInquiryData] = useState(null);
@@ -47,6 +51,7 @@ const ServiceProducts = () => {
       });
       setProducts(res.data);
       setPagination(res.pagination);
+      setGlobalMargin(res.margin_percent ?? 0);
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
@@ -74,6 +79,56 @@ const ServiceProducts = () => {
     setSelectedProduct(null);
     setCustomerNo('');
     setInquiryData(null);
+  };
+
+  const openMarginEdit = (e, product) => {
+    e.stopPropagation();
+    setMarginEditProduct(product);
+    setMarginInput(String(product.custom_margin_percent ?? product.margin_percent ?? globalMargin));
+  };
+
+  const handleSaveMargin = async () => {
+    const value = parseFloat(marginInput);
+    if (Number.isNaN(value) || value < 0 || value > 100) {
+      toast.error('Margin harus antara 0% - 100%');
+      return;
+    }
+
+    setSavingMargin(true);
+    try {
+      const res = await put(API_ENDPOINTS.PRODUCTS.MARGINS.SET(marginEditProduct.buyer_sku_code), {
+        margin_percent: value,
+        product_name: marginEditProduct.product_name,
+        transaction_type: isPasca ? 'pasca' : 'prepaid',
+      });
+      toast.success(res.message);
+      setMarginEditProduct(null);
+      fetchProducts();
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setSavingMargin(false);
+    }
+  };
+
+  const handleResetMargin = async () => {
+    setSavingMargin(true);
+    try {
+      const res = await del(API_ENDPOINTS.PRODUCTS.MARGINS.SET(marginEditProduct.buyer_sku_code));
+      toast.success(res.message);
+      setMarginEditProduct(null);
+      fetchProducts();
+    } catch (err) {
+      toast.error(getErrorMessage(err));
+    } finally {
+      setSavingMargin(false);
+    }
+  };
+
+  const previewSellingPrice = (product, marginValue) => {
+    const base = parseFloat(product.price) || 0;
+    const margin = parseFloat(marginValue) || 0;
+    return Math.ceil(base + (base * margin) / 100);
   };
 
   const handleBuy = async () => {
@@ -235,8 +290,30 @@ const ServiceProducts = () => {
                   {product.is_buyable === false && (
                     <p className="text-[10px] text-amber-600 font-medium mt-0.5">Belum aktif di akun Digiflazz</p>
                   )}
+                  {isAdmin && (
+                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 mt-1 rounded-full text-[10px] font-medium ${
+                      product.has_custom_margin
+                        ? 'bg-indigo-100 text-indigo-700'
+                        : 'bg-gray-100 text-gray-500'
+                    }`}>
+                      <Percent className="w-2.5 h-2.5" />
+                      {product.has_custom_margin
+                        ? `${product.custom_margin_percent}% khusus`
+                        : `${globalMargin}% global`}
+                    </span>
+                  )}
                 </div>
-                <div className="text-right flex-shrink-0">
+                <div className="text-right flex-shrink-0 flex items-center gap-1">
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={(e) => openMarginEdit(e, product)}
+                      className="p-1.5 text-primary-600 hover:bg-primary-50 rounded-lg"
+                      title="Atur margin produk"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                  )}
                   {isPasca ? (
                     <p className="text-xs font-medium text-primary-600">Cek Tagihan</p>
                   ) : (
@@ -376,6 +453,73 @@ const ServiceProducts = () => {
                 </div>
               </>
             )}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        isOpen={!!marginEditProduct}
+        onClose={() => setMarginEditProduct(null)}
+        title="Atur Margin Produk"
+      >
+        {marginEditProduct && (
+          <div className="space-y-4">
+            <div className="bg-gray-50 rounded-xl p-4">
+              <p className="font-medium text-gray-900">{marginEditProduct.product_name}</p>
+              <p className="text-xs text-gray-500 mt-1">{marginEditProduct.buyer_sku_code}</p>
+              {!isPasca && (
+                <p className="text-sm text-gray-500 mt-2">
+                  Harga modal: {formatCurrency(marginEditProduct.price)}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Margin (%)</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                step="0.5"
+                value={marginInput}
+                onChange={(e) => setMarginInput(e.target.value)}
+                className="w-full px-4 py-3 bg-white text-gray-900 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-500"
+              />
+            </div>
+
+            {!isPasca && (
+              <div className="bg-primary-50 rounded-xl p-3 text-sm flex justify-between">
+                <span className="text-gray-600">Preview harga jual</span>
+                <span className="font-bold text-primary-600">
+                  {formatCurrency(previewSellingPrice(marginEditProduct, marginInput))}
+                </span>
+              </div>
+            )}
+
+            <p className="text-xs text-gray-500">
+              Margin global: {globalMargin}%. Kosongkan khusus dengan tombol &quot;Pakai Global&quot;.
+            </p>
+
+            <div className="flex gap-2">
+              {marginEditProduct.has_custom_margin && (
+                <button
+                  type="button"
+                  onClick={handleResetMargin}
+                  disabled={savingMargin}
+                  className="flex-1 border border-gray-200 text-gray-700 py-3 rounded-xl font-medium hover:bg-gray-50 disabled:opacity-60"
+                >
+                  Pakai Global
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleSaveMargin}
+                disabled={savingMargin}
+                className="flex-1 bg-primary-600 text-white py-3 rounded-xl font-medium hover:bg-primary-700 disabled:opacity-60 flex items-center justify-center"
+              >
+                {savingMargin ? <LoadingSpinner size="sm" className="text-white" /> : 'Simpan Margin'}
+              </button>
+            </div>
           </div>
         )}
       </Modal>

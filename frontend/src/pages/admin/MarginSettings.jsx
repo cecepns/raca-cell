@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Percent, TrendingUp, MessageCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Percent, TrendingUp, MessageCircle, Package } from 'lucide-react';
 import Header from '../../components/layout/Header';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import { get, put, formatCurrency, getErrorMessage } from '../../utils/request';
@@ -87,7 +88,21 @@ const MarginSettings = () => {
               <p className="text-xs text-gray-500 mb-4">
                 Margin diterapkan ke semua harga produk dari Digiflazz secara dinamis.
                 Harga jual = harga modal + (harga modal × margin%). Perubahan langsung aktif tanpa restart server.
+                Produk dengan margin khusus per item tidak terpengaruh pengaturan ini.
               </p>
+
+              <Link
+                to="/admin/product-margins"
+                className="flex items-center gap-3 mb-4 p-3 bg-indigo-50 border border-indigo-100 rounded-xl hover:bg-indigo-100 transition-colors"
+              >
+                <div className="w-9 h-9 bg-indigo-100 rounded-lg flex items-center justify-center">
+                  <Package className="w-4 h-4 text-indigo-600" />
+                </div>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-indigo-900">Margin Per Produk</p>
+                  <p className="text-xs text-indigo-700">Atur margin khusus per SKU produk</p>
+                </div>
+              </Link>
 
               <label className="block text-sm font-medium text-gray-700 mb-2">Atur Margin (%)</label>
               <div className="flex items-center gap-3">
