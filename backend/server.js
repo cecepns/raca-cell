@@ -956,6 +956,46 @@ app.delete('/api/users/:id', authenticate, authorize('owner'), async (req, res) 
   }
 });
 
+app.post('/api/users/:id/reset-password', authenticate, authorize('owner', 'admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ success: false, message: 'Password baru wajib diisi' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ success: false, message: 'Password baru minimal 6 karakter' });
+    }
+
+    const [existing] = await pool.execute('SELECT id, name, email, role FROM users WHERE id = ?', [id]);
+    if (!existing.length) {
+      return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
+    }
+
+    const targetUser = existing[0];
+    if (targetUser.role === 'owner' && req.user.role !== 'owner') {
+      return res.status(403).json({ success: false, message: 'Tidak bisa reset password owner' });
+    }
+
+    const hashed = await bcrypt.hash(password, 10);
+    await pool.execute('UPDATE users SET password = ? WHERE id = ?', [hashed, id]);
+
+    await logActivity(
+      req.user.id,
+      'reset_user_password',
+      `Reset password user ${targetUser.name} (ID ${id})`,
+      { userId: id, target_email: targetUser.email },
+      req.ip
+    );
+
+    res.json({ success: true, message: 'Password user berhasil direset' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
+  }
+});
+
 // ─── Balance Routes ────────────────────────────────────────────────────────
 
 app.post('/api/users/:id/balance', authenticate, authorize('owner', 'admin'), async (req, res) => {
