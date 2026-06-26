@@ -35,16 +35,24 @@ app.use(express.json());
 const digiflazzSign = (ref) =>
   crypto.createHash('md5').update(DIGIFLAZZ_USERNAME + DIGIFLAZZ_API_KEY + ref).digest('hex');
 
-const getEffectiveMargin = (buyerSkuCode) => {
-  if (buyerSkuCode && productMargins.has(buyerSkuCode)) {
-    return productMargins.get(buyerSkuCode);
+const normalizeSkuCode = (sku) => String(sku || '').trim().toLowerCase();
+
+const buildProductMarginsMap = (rows) =>
+  new Map(
+    rows.map((row) => [normalizeSkuCode(row.buyer_sku_code), parseFloat(row.margin_percent)])
+  );
+
+const getEffectiveMargin = (buyerSkuCode, marginsMap = productMargins) => {
+  const key = normalizeSkuCode(buyerSkuCode);
+  if (key && marginsMap.has(key)) {
+    return marginsMap.get(key);
   }
   return marginPercent;
 };
 
-const calcSellingPrice = (price, buyerSkuCode) => {
+const calcSellingPrice = (price, buyerSkuCode, marginsMap = productMargins) => {
   const base = parseFloat(price) || 0;
-  const margin = getEffectiveMargin(buyerSkuCode);
+  const margin = getEffectiveMargin(buyerSkuCode, marginsMap);
   return Math.ceil(base + (base * margin) / 100);
 };
 
@@ -89,14 +97,15 @@ const loadProductMargins = async () => {
     const [rows] = await pool.execute(
       'SELECT buyer_sku_code, margin_percent FROM product_margins'
     );
-    productMargins = new Map(
-      rows.map((row) => [row.buyer_sku_code, parseFloat(row.margin_percent)])
-    );
-  } catch {
+    productMargins = buildProductMarginsMap(rows);
+  } catch (err) {
+    console.error('Failed to load product margins:', err.message);
     productMargins = new Map();
   }
   return productMargins;
 };
+
+const fetchProductMarginsMap = () => loadProductMargins();
 
 const generateRefId = () => `RC${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
 
@@ -349,12 +358,13 @@ const matchPascaService = (product, service) => {
   return classifyPascaService(product) === service;
 };
 
-const mapPrepaidProducts = (products) =>
+const mapPrepaidProducts = (products, marginsMap = productMargins) =>
   products
     .filter((p) => p.buyer_product_status && p.seller_product_status)
     .map((p) => {
-      const hasCustomMargin = productMargins.has(p.buyer_sku_code);
-      const effectiveMargin = getEffectiveMargin(p.buyer_sku_code);
+      const skuKey = normalizeSkuCode(p.buyer_sku_code);
+      const hasCustomMargin = marginsMap.has(skuKey);
+      const effectiveMargin = getEffectiveMargin(p.buyer_sku_code, marginsMap);
       return {
         buyer_sku_code: p.buyer_sku_code,
         product_name: p.product_name,
@@ -362,21 +372,22 @@ const mapPrepaidProducts = (products) =>
         brand: p.brand,
         type: p.type,
         price: parseFloat(p.price),
-        selling_price: calcSellingPrice(p.price, p.buyer_sku_code),
+        selling_price: calcSellingPrice(p.price, p.buyer_sku_code, marginsMap),
         margin_percent: effectiveMargin,
-        custom_margin_percent: hasCustomMargin ? productMargins.get(p.buyer_sku_code) : null,
+        custom_margin_percent: hasCustomMargin ? marginsMap.get(skuKey) : null,
         has_custom_margin: hasCustomMargin,
         desc: p.desc,
         is_pasca: false,
       };
     });
 
-const mapPascaProducts = (products) =>
+const mapPascaProducts = (products, marginsMap = productMargins) =>
   products
     .filter((p) => isPascaListed(p))
     .map((p) => {
-      const hasCustomMargin = productMargins.has(p.buyer_sku_code);
-      const effectiveMargin = getEffectiveMargin(p.buyer_sku_code);
+      const skuKey = normalizeSkuCode(p.buyer_sku_code);
+      const hasCustomMargin = marginsMap.has(skuKey);
+      const effectiveMargin = getEffectiveMargin(p.buyer_sku_code, marginsMap);
       return {
         buyer_sku_code: p.buyer_sku_code,
         product_name: p.product_name,
@@ -385,7 +396,7 @@ const mapPascaProducts = (products) =>
         admin: parseFloat(p.admin) || 0,
         commission: parseFloat(p.commission) || 0,
         margin_percent: effectiveMargin,
-        custom_margin_percent: hasCustomMargin ? productMargins.get(p.buyer_sku_code) : null,
+        custom_margin_percent: hasCustomMargin ? marginsMap.get(skuKey) : null,
         has_custom_margin: hasCustomMargin,
         desc: p.desc,
         is_pasca: true,
@@ -418,8 +429,8 @@ const processDigiflazzPasca = async (command, refId, buyerSkuCode, customerNo) =
   return callDigiflazz('/transaction', body);
 };
 
-const calcPascaSellingPrice = (digiflazzSellingPrice, buyerSkuCode) =>
-  calcSellingPrice(digiflazzSellingPrice, buyerSkuCode);
+const calcPascaSellingPrice = (digiflazzSellingPrice, buyerSkuCode, marginsMap = productMargins) =>
+  calcSellingPrice(digiflazzSellingPrice, buyerSkuCode, marginsMap);
 
 const mapDigiflazzStatus = (status) => {
   const s = (status || '').toLowerCase();
@@ -1142,7 +1153,8 @@ app.get('/api/products/prepaid', authenticate, async (req, res) => {
     if (category) raw = raw.filter((p) => p.category === category);
     if (type) raw = raw.filter((p) => p.type === type);
 
-    let data = mapPrepaidProducts(raw);
+    const marginsMap = await fetchProductMarginsMap();
+    let data = mapPrepaidProducts(raw, marginsMap);
 
     if (search) {
       data = data.filter(
@@ -1191,7 +1203,8 @@ app.get('/api/products/pasca', authenticate, async (req, res) => {
     if (service) raw = raw.filter((p) => matchPascaService(p, service));
     if (brand) raw = raw.filter((p) => p.brand === brand);
 
-    let data = mapPascaProducts(raw);
+    const marginsMap = await fetchProductMarginsMap();
+    let data = mapPascaProducts(raw, marginsMap);
 
     if (search) {
       data = data.filter(
@@ -1220,9 +1233,10 @@ app.get('/api/products/pasca', authenticate, async (req, res) => {
 
 app.get('/api/products/services', authenticate, async (req, res) => {
   try {
-    const [allPrepaidRaw, allPascaRaw] = await Promise.all([
+    const [allPrepaidRaw, allPascaRaw, marginsMap] = await Promise.all([
       getDigiflazzPriceList(),
       getDigiflazzPascaPriceList().catch(() => []),
+      fetchProductMarginsMap(),
     ]);
 
     const data = SERVICE_IDS.map((id) => {
@@ -1239,7 +1253,7 @@ app.get('/api/products/services', authenticate, async (req, res) => {
     res.json({
       success: true,
       data,
-      total_products: mapPrepaidProducts(allPrepaidRaw).length + mapPascaProducts(allPascaRaw).length,
+      total_products: mapPrepaidProducts(allPrepaidRaw, marginsMap).length + mapPascaProducts(allPascaRaw, marginsMap).length,
     });
   } catch (err) {
     res.status(502).json({ success: false, message: err.message || 'Gagal mengambil daftar layanan' });
@@ -1258,8 +1272,9 @@ app.get('/api/products/brands', authenticate, async (req, res) => {
       );
     }
 
+    const marginsMap = await fetchProductMarginsMap();
     const mapper = isPasca ? mapPascaProducts : mapPrepaidProducts;
-    const brands = [...new Set(mapper(products).map((p) => p.brand).filter(Boolean))].sort();
+    const brands = [...new Set(mapper(products, marginsMap).map((p) => p.brand).filter(Boolean))].sort();
     res.json({ success: true, data: brands });
   } catch (err) {
     console.error('Digiflazz brands error:', err.message);
@@ -1270,7 +1285,8 @@ app.get('/api/products/brands', authenticate, async (req, res) => {
 app.get('/api/products/categories', authenticate, async (req, res) => {
   try {
     const products = await getDigiflazzPriceList();
-    const categories = [...new Set(mapPrepaidProducts(products).map((p) => p.category).filter(Boolean))].sort();
+    const marginsMap = await fetchProductMarginsMap();
+    const categories = [...new Set(mapPrepaidProducts(products, marginsMap).map((p) => p.category).filter(Boolean))].sort();
     res.json({ success: true, data: categories });
   } catch (err) {
     console.error('Digiflazz categories error:', err.message);
@@ -1350,7 +1366,7 @@ app.get('/api/products/margins', authenticate, authorize('owner', 'admin'), asyn
 
 app.put('/api/products/margins/:buyer_sku_code', authenticate, authorize('owner', 'admin'), async (req, res) => {
   try {
-    const buyerSkuCode = decodeURIComponent(req.params.buyer_sku_code || '').trim();
+    const buyerSkuCode = normalizeSkuCode(decodeURIComponent(req.params.buyer_sku_code || ''));
     const { margin_percent, product_name, transaction_type } = req.body;
     const value = parseFloat(margin_percent);
 
@@ -1404,14 +1420,14 @@ app.put('/api/products/margins/:buyer_sku_code', authenticate, authorize('owner'
 
 app.delete('/api/products/margins/:buyer_sku_code', authenticate, authorize('owner', 'admin'), async (req, res) => {
   try {
-    const buyerSkuCode = decodeURIComponent(req.params.buyer_sku_code || '').trim();
+    const buyerSkuCode = normalizeSkuCode(decodeURIComponent(req.params.buyer_sku_code || ''));
 
     if (!buyerSkuCode) {
       return res.status(400).json({ success: false, message: 'SKU produk wajib diisi' });
     }
 
     const [existing] = await pool.execute(
-      'SELECT product_name FROM product_margins WHERE buyer_sku_code = ? LIMIT 1',
+      'SELECT product_name FROM product_margins WHERE LOWER(TRIM(buyer_sku_code)) = ? LIMIT 1',
       [buyerSkuCode]
     );
 
@@ -1419,7 +1435,7 @@ app.delete('/api/products/margins/:buyer_sku_code', authenticate, authorize('own
       return res.status(404).json({ success: false, message: 'Margin khusus produk tidak ditemukan' });
     }
 
-    await pool.execute('DELETE FROM product_margins WHERE buyer_sku_code = ?', [buyerSkuCode]);
+    await pool.execute('DELETE FROM product_margins WHERE LOWER(TRIM(buyer_sku_code)) = ?', [buyerSkuCode]);
     productMargins.delete(buyerSkuCode);
 
     await logActivity(
@@ -1457,7 +1473,8 @@ app.post('/api/transactions/topup', authenticate, async (req, res) => {
     }
 
     const basePrice = parseFloat(price);
-    const sellPrice = calcSellingPrice(basePrice, buyer_sku_code);
+    const marginsMap = await fetchProductMarginsMap();
+    const sellPrice = calcSellingPrice(basePrice, buyer_sku_code, marginsMap);
 
     await connection.beginTransaction();
 
@@ -1570,7 +1587,8 @@ app.post('/api/transactions/pasca/inquiry', authenticate, async (req, res) => {
     }
 
     const basePrice = parseFloat(data.price) || parseFloat(data.selling_price) || 0;
-    const sellingPrice = calcPascaSellingPrice(data.selling_price || data.price, buyer_sku_code);
+    const marginsMap = await fetchProductMarginsMap();
+    const sellingPrice = calcPascaSellingPrice(data.selling_price || data.price, buyer_sku_code, marginsMap);
 
     await pool.execute(
       `INSERT INTO pasca_inquiries
